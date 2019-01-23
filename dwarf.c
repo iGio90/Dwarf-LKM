@@ -13,6 +13,7 @@
 #define HANDLER_BUF_SIZE 256
 
 static struct kprobe execve_probe;
+static struct kprobe compat_execve_probe;
 
 /*
  * function declarations
@@ -204,14 +205,23 @@ static int __init dwarf_init(void) {
     disable_selinux();
 
     printk(KERN_INFO "dwarf -> sys execve: 0x%p", (void *) kallsyms_lookup_name("SyS_execve"));
+    printk(KERN_INFO "dwarf -> compat sys execve: 0x%p", (void *) kallsyms_lookup_name("compat_SyS_execve"));
 
     execve_probe.pre_handler = handler_pre;
     execve_probe.addr = (kprobe_opcode_t *) kallsyms_lookup_name("SyS_execve");
+    compat_execve_probe.pre_handler = handler_pre;
+    compat_execve_probe.addr = (kprobe_opcode_t *) kallsyms_lookup_name("compat_SyS_execve");
 
     ret = register_kprobe(&execve_probe);
     if (ret < 0) {
         printk(KERN_INFO "dwarf -> cannot register probe on execve, returned %d\n", ret);
         return ret;
+    }
+
+    ret = register_kprobe(&compat_execve_probe);
+    if (ret < 0) {
+        printk(KERN_INFO "dwarf -> cannot register probe on compat execve, returned %d\n", ret);
+        //return ret;
     }
 
     printk(KERN_INFO "dwarf -> planted execve kprobe at %p\n", execve_probe.addr);
@@ -221,7 +231,9 @@ static int __init dwarf_init(void) {
 
 static void __exit dwarf_end(void) {
     unregister_kprobe(&execve_probe);
+    unregister_kprobe(&compat_execve_probe);
     printk(KERN_INFO "dwarf -> kprobe at %p unregistered\n", execve_probe.addr);
+    printk(KERN_INFO "dwarf -> kprobe at %p unregistered\n", compat_execve_probe.addr);
 }
 
 module_init(dwarf_init);
